@@ -1,6 +1,6 @@
 local library = {}
 
--- // UI Styling \\ --
+-- // Core UI Styling \\ --
 local function createCorner(parent, radius)
     local corner = Instance.new("UICorner")
     corner.CornerRadius = UDim.new(0, radius or 6)
@@ -260,6 +260,8 @@ function library.new(library_title, cfg_location)
         AutoButtonColor = false,
         Modal = true,
     }, ScreenGui)
+
+    createCorner(ImageLabel, 6)
 
     function menu.GetPosition()
         return ImageLabel.Position
@@ -2158,25 +2160,34 @@ end
 
     -- Modify existing element creation to include modern styling
     local old_element = menu.element
-    function menu:element(type, ...)
-        local element = old_element(self, type, ...)
+    function menu:element(type, text, data, callback)
+        local element = old_element(self, type, text, data, callback)
         
         if type == "Toggle" then
             createCorner(element.frame, 6)
-            -- Add fade transitions
-            element.update = function(new_value)
+            
+            -- Add fade transition
+            local function updateToggle(state)
                 game:GetService("TweenService"):Create(
                     element.text,
                     TweenInfo.new(0.3),
-                    {TextColor3 = new_value and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)}
+                    {TextColor3 = state and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)}
                 ):Play()
+                
+                library:notify(text .. " " .. (state and "Enabled" or "Disabled"), 2)
             end
-        elseif type == "Dropdown" then
+            
+            element.update = updateToggle
+            
+        elseif type == "Dropdown" or type == "Combo" then
             createCorner(element.frame, 6)
             createCorner(element.container, 6)
+            
         elseif type == "ColorPicker" then
             createCorner(element.frame, 8)
             createCorner(element.container, 8)
+            createCorner(element.color_frame, 8)
+            
         elseif type == "Button" then
             createCorner(element.frame, 6)
         end
