@@ -1,5 +1,77 @@
 local library = {}
 
+-- // UI Styling \\ --
+local function createCorner(parent, radius)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, radius or 6)
+    corner.Parent = parent
+    return corner
+end
+
+-- // Notifications \\ --
+library.notifications = {}
+function library:notify(text, duration)
+    duration = duration or 2
+    
+    local notification = Instance.new("Frame")
+    notification.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    notification.BorderColor3 = Color3.fromRGB(84, 101, 255)
+    notification.Position = UDim2.new(1, 10, 1, -10)
+    notification.Size = UDim2.new(0, 220, 0, 50)
+    notification.Parent = self.gui
+    createCorner(notification)
+    
+    local text_label = Instance.new("TextLabel")
+    text_label.BackgroundTransparency = 1
+    text_label.Size = UDim2.new(1, -10, 1, 0)
+    text_label.Position = UDim2.new(0, 5, 0, 0)
+    text_label.Font = Enum.Font.Ubuntu
+    text_label.Text = text
+    text_label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    text_label.TextSize = 14
+    text_label.Parent = notification
+    
+    -- Stack notifications
+    for _, existing in ipairs(self.notifications) do
+        existing:TweenPosition(
+            existing.Position + UDim2.new(0, 0, 0, -60),
+            "Out",
+            "Quad",
+            0.3,
+            true
+        )
+    end
+    
+    -- Animate in
+    notification:TweenPosition(
+        UDim2.new(1, -10, 1, -10),
+        "Out",
+        "Quad",
+        0.3,
+        true
+    )
+    
+    table.insert(self.notifications, notification)
+    
+    delay(duration, function()
+        -- Animate out
+        for i, existing in ipairs(self.notifications) do
+            if existing == notification then
+                table.remove(self.notifications, i)
+                notification:TweenPosition(
+                    UDim2.new(1, 10, 1, notification.Position.Y.Offset),
+                    "Out",
+                    "Quad",
+                    0.3,
+                    true
+                )
+                game:GetService("Debris"):AddItem(notification, 0.3)
+                break
+            end
+        end
+    end)
+end
+
 local TweenService = game:GetService("TweenService")
 function library:tween(...) TweenService:Create(...):Play() end
 
@@ -451,7 +523,6 @@ end
                     BackgroundColor3 = Color3.fromRGB(5, 5, 5),
                     BorderColor3 = Color3.fromRGB(30, 30, 30),
                     Size = UDim2.new(1, 0, 0, 20),
-                    CornerRadius = UDim.new(0.12, 0),
                 }, actual_side)
 
                 local Container = library:create("Frame", {
@@ -536,7 +607,6 @@ end
                             Position = UDim2.new(0, 0, 0, 0),
                             Size = UDim2.new(1, 0, 0, 18),
                             Text = "",
-                            CornerRadius = UDim.new(0.12, 0),
                         }, Container)
 
                         function element:set_visible(bool)
@@ -557,7 +627,6 @@ end
                             BorderColor3 = Color3.fromRGB(0, 0, 0),
                             Position = UDim2.new(0, 9, 0.5, 0),
                             Size = UDim2.new(0, 9, 0, 9),
-                            CornerRadius = UDim.new(0.12, 0),
                         }, ToggleButton)
 
                         local ToggleText = library:create("TextLabel", {
@@ -768,7 +837,7 @@ end
                             end)
                             uis.InputEnded:Connect(function(input)
                                 if extra_value.Key ~= nil and not is_binding then
-                                    local key = input.KeyCode.Name ~= "Unknown" and input.KeyCode.Name or input.UserInputType.Name
+                                    local key = input.KeyCode.Name ~= "Unknown" and input.UserInputType.Name
                                     if key == extra_value.Key then
                                         if extra_value.Type == "Hold" then
                                             extra_value.Active = false
@@ -776,7 +845,6 @@ end
                                             menu.values[tab.tab_num][section_name][sector_name][extra_flag] = extra_value
                                         end
                                     end
-                                end
 							end)
 
                             Keybind.MouseButton1Down:Connect(function()
@@ -2054,6 +2122,66 @@ end
         end
 
         return tab
+    end
+
+    -- Add profile picture
+    local profileFrame = library:create("Frame", {
+        Position = UDim2.new(0, 10, 1, -50),
+        Size = UDim2.new(0, 40, 0, 40),
+        BackgroundColor3 = Color3.fromRGB(25, 25, 25),
+        BorderColor3 = Color3.fromRGB(0, 0, 0),
+    }, ImageLabel)
+    createCorner(profileFrame, 20) -- Make it circular
+    
+    local profileImage = library:create("ImageLabel", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Image = game.Players:GetUserThumbnailAsync(
+            game.Players.LocalPlayer.UserId,
+            Enum.ThumbnailType.HeadShot,
+            Enum.ThumbnailSize.Size420x420
+        )
+    }, profileFrame)
+    createCorner(profileImage, 20)
+    
+    -- Add game info
+    local gameInfo = library:create("TextLabel", {
+        Position = UDim2.new(1, -160, 1, -30),
+        Size = UDim2.new(0, 150, 0, 20),
+        BackgroundTransparency = 1,
+        TextColor3 = Color3.fromRGB(255, 255, 255),
+        TextSize = 14,
+        Font = Enum.Font.Ubuntu,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        Text = cfg_location
+    }, ImageLabel)
+
+    -- Modify existing element creation to include modern styling
+    local old_element = menu.element
+    function menu:element(type, ...)
+        local element = old_element(self, type, ...)
+        
+        if type == "Toggle" then
+            createCorner(element.frame, 6)
+            -- Add fade transitions
+            element.update = function(new_value)
+                game:GetService("TweenService"):Create(
+                    element.text,
+                    TweenInfo.new(0.3),
+                    {TextColor3 = new_value and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)}
+                ):Play()
+            end
+        elseif type == "Dropdown" then
+            createCorner(element.frame, 6)
+            createCorner(element.container, 6)
+        elseif type == "ColorPicker" then
+            createCorner(element.frame, 8)
+            createCorner(element.container, 8)
+        elseif type == "Button" then
+            createCorner(element.frame, 6)
+        end
+        
+        return element
     end
 
     return menu
