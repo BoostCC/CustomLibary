@@ -754,7 +754,7 @@ end
 
 									if new_value == "Backspace" then
 										Keybind.Text = "[ NONE ]"
-										Keybind.Size = UDim2.new(0, library:get_text_size(Keybind.Text, 14, Enum.Font.Ubuntu, Vector2.new(700, 20)).X + 3, 0, 20)
+										Keybind.Size = UDim2.new(0, library:get_text_size(Keybind.Text, 14, Enum.Font.Ubuntu, Vector2.new(700, 20)).X + 3,0, 20)
 										extra_value.Key = nil
 									end
 
@@ -775,7 +775,7 @@ end
                             end)
                             uis.InputEnded:Connect(function(input)
                                 if extra_value.Key ~= nil and not is_binding then
-                                    local key = input.KeyCode.Name ~= "Unknown" and input.KeyCode.Name or input.UserInputType.Name
+                                    local key = input.KeyCode.Name ~= "Unknown" and input.UserInputType.Name
                                     if key == extra_value.Key then
                                         if extra_value.Type == "Hold" then
                                             extra_value.Active = false
@@ -847,12 +847,16 @@ end
                                 BackgroundColor3 = Color3.fromRGB(255, 28, 28),
                                 BorderColor3 = Color3.fromRGB(0, 0, 0),
                                 Position = UDim2.new(0, 265, 0.5, 0),
-                                Size = UDim2.new(0, 35, 0, 11),
+                                Size = UDim2.new(0, 20, 0, 20), -- Made square instead of rectangle
                                 AutoButtonColor = false,
                                 Font = Enum.Font.Ubuntu,
                                 Text = "",
                                 TextXAlignment = Enum.TextXAlignment.Right,
                             }, ToggleButton)
+
+                            local UICorner = library:create("UICorner", {
+                                CornerRadius = UDim.new(0, 4)
+                            }, ColorButton)
 
                             local ColorFrame = library:create("Frame", {
                                 Name = "ColorFrame",
@@ -865,6 +869,10 @@ end
                                 ZIndex = 2,
                             }, ColorButton)
 
+                            local UICorner = library:create("UICorner", {
+                                CornerRadius = UDim.new(0, 6)
+                            }, ColorFrame)
+
                             local ColorPicker = library:create("ImageButton", {
                                 Name = "ColorPicker",
                                 BackgroundColor3 = Color3.fromRGB(255, 255, 255),
@@ -876,6 +884,10 @@ end
                                 ImageColor3 = Color3.fromRGB(255, 0, 4),
                                 ZIndex = 2,
                             }, ColorFrame)
+
+                            local UICorner = library:create("UICorner", {
+                                CornerRadius = UDim.new(0, 4)
+                            }, ColorPicker)
 
                             local ColorPick = library:create("Frame", {
                                 Name = "ColorPick",
