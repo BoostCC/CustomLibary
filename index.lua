@@ -189,7 +189,6 @@ function library.new(library_title, cfg_location)
         Modal = true,
     }, ScreenGui)
 
-    -- Add Roblox avatar thumbnail
     local userId = game.Players.LocalPlayer.UserId
     local thumbType = Enum.ThumbnailType.HeadShot
     local thumbSize = Enum.ThumbnailSize.Size420x420
@@ -197,10 +196,10 @@ function library.new(library_title, cfg_location)
 
     local AvatarImage = library:create("ImageLabel", {
         BackgroundTransparency = 1,
-        Position = UDim2.new(0, 10, 0, 10),
+        Position = UDim2.new(0, 10, 1, -40), -- Position at bottom
         Size = UDim2.new(0, 30, 0, 30),
         Image = profileImage,
-    }, ImageLabel)
+    }, TabButtons)
 
     local UICorner = library:create("UICorner", {
         CornerRadius = UDim.new(0, 4)
@@ -1134,6 +1133,10 @@ end
                             Text = "",
                         }, Dropdown)
 
+                        local UICorner = library:create("UICorner", {
+                            CornerRadius = UDim.new(0, 4)
+                        }, DropdownButton)
+
                         local DropdownButtonText = library:create("TextLabel", {
                             Name = "DropdownButtonText",
                             BackgroundTransparency = 1,
@@ -1201,6 +1204,12 @@ end
                         DropdownButton.MouseButton1Down:Connect(function()
                             DropdownScroll.Visible = not DropdownScroll.Visible
                             dropdown_open = DropdownScroll.Visible
+
+                            if DropdownScroll.Visible then
+                                library:tween(DropdownButton, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(35, 35, 35)})
+                            else 
+                                library:tween(DropdownButton, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(25, 25, 25)})
+                            end
 
                             if not dropdown_open then
                                 library:tween(DropdownText, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextColor3 = Color3.fromRGB(150, 150, 150)})
@@ -1340,6 +1349,10 @@ end
                             Text = "",
                         }, Dropdown)
 
+                        local UICorner = library:create("UICorner", {
+                            CornerRadius = UDim.new(0, 4)
+                        }, DropdownButton)
+
                         local DropdownButtonText = library:create("TextLabel", {
                             Name = "DropdownButtonText",
                             BackgroundTransparency = 1,
@@ -1407,6 +1420,12 @@ end
                         DropdownButton.MouseButton1Down:Connect(function()
                             DropdownScroll.Visible = not DropdownScroll.Visible
                             dropdown_open = DropdownScroll.Visible
+
+                            if DropdownScroll.Visible then
+                                library:tween(DropdownButton, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(35, 35, 35)})
+                            else 
+                                library:tween(DropdownButton, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(25, 25, 25)})
+                            end
 
                             if not dropdown_open then
                                 library:tween(DropdownText, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextColor3 = Color3.fromRGB(150, 150, 150)})
@@ -1945,16 +1964,19 @@ end
                             Text = "",
                         }, Slider)
 
+                        local UICorner = library:create("UICorner", {
+                            CornerRadius = UDim.new(0, 4)
+                        }, SliderButton)
+
                         local SliderFrame = library:create("Frame", {
                             Name = "SliderFrame",
-                            BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                            BackgroundColor3 = Color3.fromRGB(84, 101, 255),
                             BorderSizePixel = 0,
                             Size = UDim2.new(0, 100, 1, 0),
                         }, SliderButton)
 
-                        local UIGradient = library:create("UIGradient", {
-                            Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Color3.fromRGB(79, 95, 239)), ColorSequenceKeypoint.new(1, Color3.fromRGB(56, 67, 163))},
-                            Rotation = 90,
+                        local UICorner = library:create("UICorner", {
+                            CornerRadius = UDim.new(0, 4)
                         }, SliderFrame)
 
                         local SliderValue = library:create("TextLabel", {
