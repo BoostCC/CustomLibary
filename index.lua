@@ -18,8 +18,19 @@ local HttpService      = game:GetService("HttpService")
 local TextService      = game:GetService("TextService")
 local LocalPlayer      = Players.LocalPlayer
 
+-- Error boundary. pcall is contained here — the lib only isolates code it
+-- doesn't own: user callbacks, executor file APIs, decoded config data.
+-- Failures are reported, not swallowed, so a broken callback surfaces in
+-- the console instead of dying silently. Internal calls stay bare: if a
+-- property write or Disconnect ever throws, that's a bug to see.
+local function safecall(fn, ...)
+    local ok, result = pcall(fn, ...)
+    if not ok then warn("[SametLib] " .. tostring(result)) end
+    return ok, result
+end
+
 if getgenv and getgenv().UILibrary then
-    pcall(function() getgenv().UILibrary:Unload() end)
+    safecall(function() getgenv().UILibrary:Unload() end)
 end
 
 local Library = {}
@@ -59,11 +70,11 @@ local themeSubs = {}
 local function subscribeTheme(key, fn)
     themeSubs[key] = themeSubs[key] or {}
     table.insert(themeSubs[key], fn)
-    pcall(fn, Theme[key])
+    safecall(fn, Theme[key])
     return function()
         local subs = themeSubs[key]
         if not subs then return end
-        for i, f in ipairs(subs) do
+        for i, f in subs do
             if f == fn then table.remove(subs, i); break end
         end
     end
@@ -71,7 +82,7 @@ end
 
 local function themed(inst, prop, key)
     return subscribeTheme(key, function(value)
-        pcall(function() inst[prop] = value end)
+        inst[prop] = value
     end)
 end
 
@@ -79,7 +90,7 @@ end
 -- UIGradient.Color is a ColorSequence, not a Color3 — has to be rebuilt.
 local function themedGradient(grad, key)
     return subscribeTheme(key, function(value)
-        pcall(function() grad.Color = ColorSequence.new(value) end)
+        grad.Color = ColorSequence.new(value)
     end)
 end
 
@@ -87,12 +98,27 @@ function Library:SetTheme(key, value)
     Theme[key] = value
     local subs = themeSubs[key]
     if subs then
-        for _, fn in ipairs(subs) do pcall(fn, value) end
+        for _, fn in subs do safecall(fn, value) end
     end
 end
 
 Library.Theme = Theme
-Library.Flags = {}
+
+-- Flag storage is a proxy: reads and iteration hit the raw store, but a
+-- WRITE fires the matching SetFlags setter — so `Flags["x"] = v` applies
+-- the component (callback + UI sync) instead of silently mutating state.
+-- Internal writes go straight to _flagStore: routing them through the
+-- proxy would fire the setter, which writes the flag again → recursion.
+Library._flagStore = {}
+Library.Flags = setmetatable({}, {
+    __index = function(_, k) return Library._flagStore[k] end,
+    __newindex = function(_, k, v)
+        Library._flagStore[k] = v
+        local setter = Library.SetFlags[k]
+        if setter then safecall(setter, v) end
+    end,
+    __iter = function() return next, Library._flagStore end,
+})
 Library.MenuKeybind = Enum.KeyCode.RightControl
 Library.Windows = {}
 Library._connections = {}
@@ -110,15 +136,15 @@ Library.Folders = {
 Library.SetFlags = {}
 
 -- File-IO helpers — gracefully no-op in environments without the exploit
--- file APIs (e.g. Studio). Wrap in pcall so a missing function or
--- permission error never breaks the lib's load path. Reference globals
--- directly — in Luau, undefined globals resolve to nil rather than
--- erroring, which makes the simple form safe.
+-- file APIs (e.g. Studio). Missing functions become stubs; real runtime
+-- errors go through safecall so a disk/permission failure is reported
+-- once rather than failing silently. Reference globals directly — in
+-- Luau, undefined globals resolve to nil rather than erroring.
 do
     local function safe(fn)
         if type(fn) ~= "function" then return function() return false end end
         return function(...)
-            local ok, result = pcall(fn, ...)
+            local ok, result = safecall(fn, ...)
             if not ok then return false end
             return result
         end
@@ -489,9 +515,7 @@ end
 local function serializeFlag(v)
     local t = typeof(v)
     if t == "EnumItem" then
-        local enumName
-        pcall(function() enumName = v.EnumType.Name end)
-        return {__type = "EnumItem", Enum = enumName or "KeyCode", Name = v.Name}
+        return {__type = "EnumItem", Enum = v.EnumType.Name, Name = v.Name}
     elseif t == "Color3" then
         return {__type = "Color3", R = v.R, G = v.G, B = v.B}
     elseif t == "Vector2" then
@@ -504,7 +528,7 @@ local function deserializeFlag(v)
     if type(v) ~= "table" then return v end
     if v.__type == "EnumItem" then
         local enumName = v.Enum or "KeyCode"
-        local ok, item = pcall(function() return Enum[enumName][v.Name] end)
+        local ok, item = safecall(function() return Enum[enumName][v.Name] end)
         if ok and item then return item end
         return nil
     elseif v.__type == "Color3" then
@@ -519,7 +543,7 @@ end
 -- the table AND the encoded string — caller picks whichever they need.
 function Library:GetConfig()
     local out = {}
-    for k, v in pairs(self.Flags) do
+    for k, v in pairs(self._flagStore) do
         out[k] = serializeFlag(v)
     end
     return out, HttpService:JSONEncode(out)
@@ -531,7 +555,7 @@ end
 -- success, (false, error) otherwise.
 function Library:LoadConfig(config)
     if type(config) == "string" then
-        local ok, decoded = pcall(function() return HttpService:JSONDecode(config) end)
+        local ok, decoded = safecall(function() return HttpService:JSONDecode(config) end)
         if not ok then return false, decoded end
         config = decoded
     end
@@ -541,7 +565,7 @@ function Library:LoadConfig(config)
         local setter = self.SetFlags[flag]
         if setter then
             local value = deserializeFlag(raw)
-            pcall(setter, value)
+            safecall(setter, value)
             applied = applied + 1
         end
     end
@@ -587,7 +611,7 @@ function Library:ListConfigs()
     local out = {}
     local files = self._listfiles(self.Folders.Configs)
     if type(files) ~= "table" then return out end
-    for _, file in ipairs(files) do
+    for _, file in (files) do
         if type(file) == "string" and file:sub(-5) == ".json" then
             -- Strip trailing .json AND everything up to the last path
             -- separator. Works for both / and \ separators since
@@ -684,22 +708,22 @@ end
 --// Unload
 --// ============================================================
 function Library:Unload()
-    for _, c in ipairs(self._connections) do pcall(function() c:Disconnect() end) end
+    for _, c in (self._connections) do c:Disconnect() end
     self._connections = {}
-    for _, w in ipairs(self.Windows) do
-        if w.ScreenGui then pcall(function() w.ScreenGui:Destroy() end) end
-        if w.PopupGui  then pcall(function() w.PopupGui:Destroy()  end) end
+    for _, w in (self.Windows) do
+        if w.ScreenGui then w.ScreenGui:Destroy() end
+        if w.PopupGui  then w.PopupGui:Destroy()  end
         if w.Watermark and w.Watermark.Gui then
-            pcall(function() w.Watermark.Gui:Destroy() end)
+            w.Watermark.Gui:Destroy()
         end
         if w.KeybindList and w.KeybindList.Gui then
-            pcall(function() w.KeybindList.Gui:Destroy() end)
+            w.KeybindList.Gui:Destroy()
         end
         if w.Notifications and w.Notifications.Gui then
-            pcall(function() w.Notifications.Gui:Destroy() end)
+            w.Notifications.Gui:Destroy()
         end
         if w.BlurController then
-            pcall(function() w.BlurController:Destroy() end)
+            w.BlurController:Destroy()
         end
     end
     self.Windows = {}
@@ -860,7 +884,7 @@ local function createTooltip(window)
     -- substitution against the stashed raw text so the [TAG] color tracks.
     subscribeTheme("Accent", function()
         if tooltip.Visible and TT._rawText then
-            pcall(function() label.Text = applyAccent(TT._rawText) end)
+            label.Text = applyAccent(TT._rawText)
         end
     end)
 
@@ -1041,13 +1065,11 @@ local function createWatermark(window, opts)
     function WM:Refresh()
         for _, seg in pairs(self.Segments) do
             if seg.Visible and seg.Build then
-                pcall(function()
-                    local s = seg.Build()
-                    if s ~= seg._lastText then
-                        seg._lastText = s
-                        seg.Label.Text = s
-                    end
-                end)
+                local s = seg.Build()
+                if s ~= seg._lastText then
+                    seg._lastText = s
+                    seg.Label.Text = s
+                end
             end
         end
     end
@@ -1095,8 +1117,7 @@ local function createWatermark(window, opts)
         local now = os.clock()
         if LocalPlayer and now >= nextPingAt then
             nextPingAt = now + 0.25
-            local ok, p = pcall(function() return LocalPlayer:GetNetworkPing() end)
-            WM._ping = ok and (p * 1000) or 0
+            WM._ping = LocalPlayer:GetNetworkPing() * 1000
         end
         if WM.Visible then WM:Refresh() end
     end)
@@ -1524,30 +1545,37 @@ local function createNotifications(window)
         return (text:gsub("#0a9dff", "#" .. colorHex(Theme.Accent)))
     end
 
-    local function dismiss(entry)
-        if entry._dismissed then return end
-        entry._dismissed = true
-        for i, e in ipairs(N._queue) do
-            if e == entry then table.remove(N._queue, i); break end
+    -- Toast prototype — toasts are the highest-churn object in the lib
+    -- (one per Notify), so Dismiss lives on the metatable instead of
+    -- allocating a closure per entry. Returned entries expose
+    -- entry:Dismiss() for programmatic dismissal.
+    local Toast = {}
+    Toast.__index = Toast
+
+    function Toast:Dismiss()
+        if self._dismissed then return end
+        self._dismissed = true
+        for i, e in (N._queue) do
+            if e == self then table.remove(N._queue, i); break end
         end
         local softIn = TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
         local scaleIn = TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
         local fadeIn = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
-        tween(entry.label, {TextTransparency = 1}, softIn)
-        tween(entry.iconImg, {ImageTransparency = 1}, softIn)
-        tween(entry.notifScale, {Scale = 0.95}, scaleIn)
-        tween(entry.notif, {BackgroundTransparency = 1}, fadeIn)
+        tween(self.label, {TextTransparency = 1}, softIn)
+        tween(self.iconImg, {ImageTransparency = 1}, softIn)
+        tween(self.notifScale, {Scale = 0.95}, scaleIn)
+        tween(self.notif, {BackgroundTransparency = 1}, fadeIn)
         task.delay(0.12, function()
-            local w = entry.wrapper.AbsoluteSize.X
-            tween(entry.wrapper, {Size = UDim2.new(0, w, 0, 0)}, scaleIn)
+            local w = self.wrapper.AbsoluteSize.X
+            tween(self.wrapper, {Size = UDim2.new(0, w, 0, 0)}, scaleIn)
         end)
         task.delay(0.42, function()
-            if entry.wrapper.Parent then entry.wrapper:Destroy() end
+            if self.wrapper.Parent then self.wrapper:Destroy() end
             -- Release this toast's theme subscriptions — they live in
             -- themeSubs forever otherwise, growing unboundedly with every
             -- notification the session has ever shown.
-            for _, u in ipairs(entry._unsubs) do pcall(u) end
-            table.clear(entry._unsubs)
+            for _, u in (self._unsubs) do u() end
+            table.clear(self._unsubs)
         end)
     end
 
@@ -1558,7 +1586,7 @@ local function createNotifications(window)
         local duration = opts.duration or 3
         N._seq = N._seq + 1
 
-        while #N._queue >= MAX_VIS do dismiss(N._queue[1]) end
+        while #N._queue >= MAX_VIS do N._queue[1]:Dismiss() end
 
         -- Theme subscriptions this toast owns — released when it's
         -- destroyed so themeSubs doesn't grow one closure per element
@@ -1631,11 +1659,11 @@ local function createNotifications(window)
         })
         sub(themed(label, "TextColor3", "Text"))
 
-        local entry = {
+        local entry = setmetatable({
             wrapper = wrapper, notif = notif, notifScale = notifScale,
             iconImg = iconImg, iconScale = iconScale, label = label,
             _rawText = text, _dismissed = false, _unsubs = unsubs,
-        }
+        }, Toast)
         table.insert(N._queue, entry)
 
         local springOut = TweenInfo.new(0.5,  Enum.EasingStyle.Back,  Enum.EasingDirection.Out)
@@ -1654,7 +1682,7 @@ local function createNotifications(window)
             if entry._dismissed then return end
             tween(label, {TextTransparency = 0}, smoothOut)
         end)
-        task.delay(duration, function() dismiss(entry) end)
+        task.delay(duration, function() entry:Dismiss() end)
 
         return entry
     end
@@ -1891,7 +1919,7 @@ local function createNotifications(window)
                 Padding = UDim.new(0, 8),
                 SortOrder = Enum.SortOrder.LayoutOrder,
             })
-            for i, btnCfg in ipairs(opts.Buttons) do
+            for i, btnCfg in (opts.Buttons) do
                 local isPrimary = (btnCfg.Style or "primary") == "primary"
                 local btn = new("TextButton", {
                     Name = "Button", Parent = btnHolder, LayoutOrder = i,
@@ -1931,7 +1959,7 @@ local function createNotifications(window)
                     tween(btn, {BackgroundTransparency = isPrimary and 0.95 or 1}, TI_QUICK)
                 end)
                 btn.MouseButton1Click:Connect(function()
-                    if btnCfg.Callback then pcall(btnCfg.Callback) end
+                    if btnCfg.Callback then safecall(btnCfg.Callback) end
                     promptObj:Dismiss()
                 end)
                 buttonRefs[i] = {btn = btn, txt = txt, primary = isPrimary}
@@ -2046,16 +2074,16 @@ local function createNotifications(window)
             local a = opts.Color or Theme.Accent
             accent = a
             accentHex = colorHex(a)
-            pcall(function() iconImg.ImageColor3 = a end)
-            pcall(function() titleLbl.Text = applyPromptAccent(rawTitle) end)
-            if descLbl then pcall(function() descLbl.Text = applyPromptAccent(rawDesc) end) end
-            for _, ref in ipairs(buttonRefs) do
+            iconImg.ImageColor3 = a
+            titleLbl.Text = applyPromptAccent(rawTitle)
+            if descLbl then descLbl.Text = applyPromptAccent(rawDesc) end
+            for _, ref in (buttonRefs) do
                 if ref.primary then
-                    pcall(function() ref.btn.BackgroundColor3 = a end)
-                    pcall(function() ref.txt.TextColor3 = a end)
+                    ref.btn.BackgroundColor3 = a
+                    ref.txt.TextColor3 = a
                 end
             end
-            if progFill then pcall(function() progFill.BackgroundColor3 = a end) end
+            if progFill then progFill.BackgroundColor3 = a end
         end
         applyAccent()
         if opts.Color == nil then
@@ -2083,7 +2111,7 @@ local function createNotifications(window)
             if promptObj._dismissed then return end
             tween(titleLbl, {TextTransparency = 0}, smoothOut)
             if descLbl then tween(descLbl, {TextTransparency = 0}, smoothOut) end
-            for _, ref in ipairs(buttonRefs) do
+            for _, ref in (buttonRefs) do
                 tween(ref.txt, {TextTransparency = 0}, smoothOut)
             end
             if progStopBtn then tween(progStopBtn, {TextTransparency = 0}, smoothOut) end
@@ -2092,18 +2120,18 @@ local function createNotifications(window)
         function promptObj:Dismiss()
             if self._dismissed then return end
             self._dismissed = true
-            if opts.OnDismiss then pcall(opts.OnDismiss) end
+            if opts.OnDismiss then safecall(opts.OnDismiss) end
             local softIn = TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
             tween(notifScale, {Scale = 0.95}, softIn)
             tween(notif, {BackgroundTransparency = 1}, softIn)
             tween(header, {BackgroundTransparency = 1}, softIn)
             if progHolder then tween(progHolder, {BackgroundTransparency = 1}, softIn) end
-            for _, child in ipairs({titleLbl, descLbl, progStopBtn}) do
-                if child then pcall(function() tween(child, {TextTransparency = 1}, softIn) end) end
+            for _, child in ({titleLbl, descLbl, progStopBtn}) do
+                if child then tween(child, {TextTransparency = 1}, softIn) end
             end
-            for _, ref in ipairs(buttonRefs) do
-                pcall(function() tween(ref.txt, {TextTransparency = 1}, softIn) end)
-                pcall(function() tween(ref.btn, {BackgroundTransparency = 1}, softIn) end)
+            for _, ref in (buttonRefs) do
+                tween(ref.txt, {TextTransparency = 1}, softIn)
+                tween(ref.btn, {BackgroundTransparency = 1}, softIn)
             end
             tween(iconImg, {ImageTransparency = 1}, softIn)
             task.delay(0.12, function()
@@ -2112,7 +2140,7 @@ local function createNotifications(window)
             end)
             task.delay(0.42, function()
                 if wrapper.Parent then wrapper:Destroy() end
-                for _, u in ipairs(unsubs) do pcall(u) end
+                for _, u in (unsubs) do u() end
                 table.clear(unsubs)
             end)
         end
@@ -2142,9 +2170,9 @@ local function createNotifications(window)
     -- Already-dismissed ones get skipped (label gone). Each notif's
     -- _rawText is the unsubstituted source so we can re-apply cleanly.
     subscribeTheme("Accent", function()
-        for _, entry in ipairs(N._queue) do
+        for _, entry in (N._queue) do
             if entry.label and entry._rawText and not entry._dismissed then
-                pcall(function() entry.label.Text = applyAccent(entry._rawText) end)
+                entry.label.Text = applyAccent(entry._rawText)
             end
         end
     end)
@@ -2256,9 +2284,9 @@ local function createBlurController(window)
         local t = self.Targets[name]
         if not t then return end
         if t.Conns then
-            for _, c in ipairs(t.Conns) do pcall(function() c:Disconnect() end) end
+            for _, c in (t.Conns) do c:Disconnect() end
         end
-        pcall(function() t.Overlay:Destroy() end)
+        t.Overlay:Destroy()
         self.Targets[name] = nil
     end
 
@@ -2562,7 +2590,7 @@ function Library:CreateWindow(config)
     Window._popupStack = {}
 
     function Window:OpenPopup(id, closeFn)
-        for _, entry in ipairs(self._popupStack) do
+        for _, entry in (self._popupStack) do
             if entry.id == id then
                 entry.closeFn = closeFn
                 return
@@ -2582,7 +2610,7 @@ function Library:CreateWindow(config)
         -- Close anything ABOVE this popup first (they shouldn't be left orphaned).
         while #self._popupStack > idx do
             local entry = table.remove(self._popupStack)
-            if entry.closeFn then pcall(entry.closeFn) end
+            if entry.closeFn then entry.closeFn() end
         end
         -- Remove this entry. Don't call its closeFn — the caller is closing it.
         table.remove(self._popupStack, idx)
@@ -2606,7 +2634,7 @@ function Library:CreateWindow(config)
         end
         table.remove(Window._popupStack)
         Window.ModalBlocker.Visible = #Window._popupStack > 0
-        if top.closeFn then pcall(top.closeFn) end
+        if top.closeFn then top.closeFn() end
     end)
 
     -- Main page
@@ -3005,14 +3033,14 @@ function Library:CreateWindow(config)
         if Tab.SubTabs and #Tab.SubTabs > 0 and Tab.CurrentSubTab then
             self:_animateSubTabIn(Tab.CurrentSubTab)
         else
-            for i, Section in ipairs(Tab.Sections) do
+            for i, Section in (Tab.Sections) do
                 self:_animateSectionEntrance(Section, (i - 1) * 0.05)
             end
         end
     end
 
     function Window:_animateSubTabIn(SubTab)
-        for i, Section in ipairs(SubTab.Sections) do
+        for i, Section in (SubTab.Sections) do
             self:_animateSectionEntrance(Section, (i - 1) * 0.05)
         end
     end
@@ -3027,17 +3055,17 @@ function Library:CreateWindow(config)
     function Window:_runSearch(query)
         query = (query or ""):lower()
         local empty = query == ""
-        for _, tab in ipairs(self.Tabs) do
+        for _, tab in (self.Tabs) do
             local allSections = {}
-            for _, s in ipairs(tab.Sections) do table.insert(allSections, s) end
+            for _, s in (tab.Sections) do table.insert(allSections, s) end
             if tab.SubTabs then
-                for _, subTab in ipairs(tab.SubTabs) do
-                    for _, s in ipairs(subTab.Sections) do table.insert(allSections, s) end
+                for _, subTab in (tab.SubTabs) do
+                    for _, s in (subTab.Sections) do table.insert(allSections, s) end
                 end
             end
-            for _, section in ipairs(allSections) do
+            for _, section in (allSections) do
                 local anyMatch = false
-                for _, comp in ipairs(section.Components) do
+                for _, comp in (section.Components) do
                     local match = empty
                         or (comp._searchKey and string.find(comp._searchKey, query, 1, true) ~= nil)
                     if comp.Frame then
@@ -3070,7 +3098,7 @@ function Library:CreateWindow(config)
 
     -- Tab switching
     function Window:SwitchTab(target)
-        for _, t in ipairs(self.Tabs) do
+        for _, t in (self.Tabs) do
             local active = t == target
             t.Page.Visible = active
             tween(t.Icon, {ImageColor3 = active and Theme.Accent or Theme.TextInactive})
@@ -3328,7 +3356,7 @@ function Library:CreateWindow(config)
         end
 
         function Tab:SwitchSubTab(targetSubTab)
-            for _, st in ipairs(self.SubTabs) do
+            for _, st in (self.SubTabs) do
                 local active = st == targetSubTab
                 st.Active = active
                 st.Holder.Visible = active
@@ -3343,7 +3371,7 @@ function Library:CreateWindow(config)
 
         -- SubTab live theme updates
         local function applySubTabColors()
-            for _, st in ipairs(Tab.SubTabs) do
+            for _, st in (Tab.SubTabs) do
                 st.Button.TextColor3 = st.Active and Theme.Text or Theme.TextDisabled
             end
         end
@@ -3449,7 +3477,7 @@ buildSection = function(Tab, config)
         local TT = Tab.Window and Tab.Window.Tooltip
         if not TT then return obj end
         if obj._tooltipConns then
-            for _, c in ipairs(obj._tooltipConns) do pcall(function() c:Disconnect() end) end
+            for _, c in (obj._tooltipConns) do c:Disconnect() end
         end
         obj._tooltipConns = {
             row.MouseEnter:Connect(function() TT:Show(text) end),
@@ -3614,7 +3642,7 @@ buildSection = function(Tab, config)
     --// ────────────────────────────────────────────────────────────
     local function nextFlag(prefix)
         local n = 0
-        for _ in pairs(Library.Flags) do n = n + 1 end
+        for _ in pairs(Library._flagStore) do n = n + 1 end
         return "_auto_" .. (prefix or "f") .. "_" .. n
     end
 
@@ -3869,8 +3897,8 @@ buildSection = function(Tab, config)
             cfPicker.Position = UDim2.new(CP.Sat, 0, 1 - CP.Val, 0)
             huePicker.Position = UDim2.new(CP.Hue, 0, 0.5, 0)
             alphaPicker.Position = UDim2.new(CP.Alpha, 0, 0.5, 0)
-            if cfg.Flag then Library.Flags[cfg.Flag] = CP.Value end
-            if fire and cfg.Callback then pcall(cfg.Callback, CP.Value, CP.Alpha) end
+            if cfg.Flag then Library._flagStore[cfg.Flag] = CP.Value end
+            if fire and cfg.Callback then safecall(cfg.Callback, CP.Value, CP.Alpha) end
         end
 
         -- Drag binding. InputChanged/InputEnded listeners are connected
@@ -3997,7 +4025,7 @@ buildSection = function(Tab, config)
         end
 
         if cfg.Flag then
-            Library.Flags[cfg.Flag] = CP.Value
+            Library._flagStore[cfg.Flag] = CP.Value
             Library.SetFlags[cfg.Flag] = function(v) CP:Set(v) end
         end
         updateColor(false)
@@ -4115,14 +4143,14 @@ buildSection = function(Tab, config)
 
         function Toggle:Set(v, fire)
             self.Value = v and true or false
-            Library.Flags[flag] = self.Value
+            Library._flagStore[flag] = self.Value
             tween(box, {BackgroundColor3 = self.Value and Theme.Accent or Theme.BgHeader}, TI_QUICK)
             tween(check, {
                 ImageTransparency = self.Value and 0 or 1,
                 Size = self.Value and UDim2.new(0, 12, 0, 10) or UDim2.new(0, 6, 0, 5),
             }, TI_POP)
             tween(lbl, {TextColor3 = self.Value and Theme.Text or Theme.TextDisabled}, TI_QUICK)
-            if fire ~= false and cfg.Callback then pcall(cfg.Callback, self.Value) end
+            if fire ~= false and cfg.Callback then safecall(cfg.Callback, self.Value) end
         end
 
         -- Live theme update for the toggle box. State-dependent (Accent when
@@ -4172,7 +4200,7 @@ buildSection = function(Tab, config)
             kcfg = kcfg or {}
             local KB = {Key = kcfg.Default}
             if kcfg.Flag and kcfg.Default then
-                Library.Flags[kcfg.Flag] = kcfg.Default
+                Library._flagStore[kcfg.Flag] = kcfg.Default
             end
 
             -- Optional integration with the window's keybind list widget.
@@ -4241,7 +4269,7 @@ buildSection = function(Tab, config)
                     Name = kcfg.SettingsName or (kcfg.Name and (kcfg.Name .. " Options")) or "Options",
                     Icon = kcfg.SettingsIcon,
                 }, Tab)
-                pcall(kcfg.Settings, settingsPopup)
+                safecall(kcfg.Settings, settingsPopup)
 
                 cogHolder.InputBegan:Connect(function(input)
                     if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -4307,8 +4335,8 @@ buildSection = function(Tab, config)
                     KB.Key = input.KeyCode
                     pill.Text = input.KeyCode.Name
                     listening = false
-                    if kcfg.Flag then Library.Flags[kcfg.Flag] = input.KeyCode end
-                    if kcfg.Callback then pcall(kcfg.Callback, input.KeyCode) end
+                    if kcfg.Flag then Library._flagStore[kcfg.Flag] = input.KeyCode end
+                    if kcfg.Callback then safecall(kcfg.Callback, input.KeyCode) end
                     syncList()
                 elseif not listening and KB.Key and input.KeyCode == KB.Key then
                     -- Hold mode → key down forces ON; KeyUp listener below
@@ -4341,8 +4369,8 @@ buildSection = function(Tab, config)
                 -- a config load fully restores the bind.
                 Library.SetFlags[kcfg.Flag] = function(v)
                     KB:Set(v)
-                    Library.Flags[kcfg.Flag] = v
-                    if kcfg.Callback then pcall(kcfg.Callback, v) end
+                    Library._flagStore[kcfg.Flag] = v
+                    if kcfg.Callback then safecall(kcfg.Callback, v) end
                 end
             end
 
@@ -4402,7 +4430,7 @@ buildSection = function(Tab, config)
         btn.MouseButton1Down:Connect(function() tween(btn, {BackgroundColor3 = Theme.Accent}, TI_QUICK) end)
         btn.MouseButton1Up:Connect(function() tween(btn, {BackgroundColor3 = Theme.BgHeader}, TI_SMOOTH) end)
         btn.MouseButton1Click:Connect(function()
-            if cfg.Callback then pcall(cfg.Callback) end
+            if cfg.Callback then safecall(cfg.Callback) end
         end)
 
         local Btn = {Frame = row, Instance = btn}
@@ -4474,11 +4502,11 @@ buildSection = function(Tab, config)
             local step = cfg.Step or 1
             v = math.floor(v / step + 0.5) * step
             Slider.Value = v
-            Library.Flags[flag] = v
+            Library._flagStore[flag] = v
             local pct = (v - minV) / math.max(maxV - minV, 1e-6)
             tween(progBar, {Size = UDim2.new(pct, 0, 1, 0)}, TI_SLIDE)
             valLbl.Text = (cfg.Suffix and tostring(v) .. cfg.Suffix) or tostring(v)
-            if fire and cfg.Callback then pcall(cfg.Callback, v) end
+            if fire and cfg.Callback then safecall(cfg.Callback, v) end
         end
 
         -- Drag-scoped listeners: InputChanged/InputEnded connect only for
@@ -4585,8 +4613,8 @@ buildSection = function(Tab, config)
             local v = input.Text
             if cfg.Numeric then v = tonumber(v) or 0 end
             TB.Value = v
-            Library.Flags[flag] = v
-            if cfg.Callback then pcall(cfg.Callback, v) end
+            Library._flagStore[flag] = v
+            if cfg.Callback then safecall(cfg.Callback, v) end
         end
 
         if cfg.Finished then
@@ -4777,8 +4805,8 @@ buildSection = function(Tab, config)
         -- don't pile up in themeSubs across every :Refresh.
         local optionUnsubs = {}
         local function reapplyOptionThemes()
-            for _, sync in ipairs(optionSyncers) do
-                pcall(sync, false)
+            for _, sync in (optionSyncers) do
+                sync(false)
             end
         end
         subscribeTheme("Accent", reapplyOptionThemes)
@@ -4789,14 +4817,14 @@ buildSection = function(Tab, config)
         subscribeTheme("Selected", reapplyOptionThemes)
 
         local function buildItems()
-            for _, c in ipairs(popup:GetChildren()) do
+            for _, c in (popup:GetChildren()) do
                 if c:IsA("TextButton") then c:Destroy() end
             end
             table.clear(optionSyncers)
-            for _, u in ipairs(optionUnsubs) do pcall(u) end
+            for _, u in (optionUnsubs) do u() end
             table.clear(optionUnsubs)
 
-            for i, item in ipairs(items) do
+            for i, item in (items) do
                 -- Each row: 260x30, ClipsDescendants, has rounded corners
                 local opt = new("TextButton", {
                     Name = "OptionHolder", Parent = popup,
@@ -4902,10 +4930,10 @@ buildSection = function(Tab, config)
                         DD.Value = item
                         setOpen(false)
                     end
-                    Library.Flags[flag] = DD.Value
+                    Library._flagStore[flag] = DD.Value
                     refresh()
-                    if cfg.Callback then pcall(cfg.Callback, DD.Value) end
-                    for _, sync in ipairs(optionSyncers) do sync(true) end
+                    if cfg.Callback then safecall(cfg.Callback, DD.Value) end
+                    for _, sync in (optionSyncers) do sync(true) end
                 end)
             end
         end
@@ -4918,10 +4946,10 @@ buildSection = function(Tab, config)
 
         function DD:Set(v)
             self.Value = v
-            Library.Flags[flag] = v
+            Library._flagStore[flag] = v
             refresh()
-            for _, sync in ipairs(optionSyncers) do sync(true) end
-            if cfg.Callback then pcall(cfg.Callback, v) end
+            for _, sync in (optionSyncers) do sync(true) end
+            if cfg.Callback then safecall(cfg.Callback, v) end
         end
         function DD:Refresh(newItems)
             items = newItems or items
@@ -4932,11 +4960,11 @@ buildSection = function(Tab, config)
         buildItems()
         if multi and type(cfg.Default) == "table" then
             DD.Value = {}
-            for _, v in ipairs(cfg.Default) do DD.Value[v] = true end
-            for _, sync in ipairs(optionSyncers) do sync(false) end
+            for _, v in (cfg.Default) do DD.Value[v] = true end
+            for _, sync in (optionSyncers) do sync(false) end
         end
         refresh()
-        Library.Flags[flag] = DD.Value
+        Library._flagStore[flag] = DD.Value
         Library.SetFlags[flag] = function(v) DD:Set(v) end
         DD.Frame = row
         DD._searchKey = (cfg.Name or "dropdown"):lower()
@@ -4951,7 +4979,7 @@ buildSection = function(Tab, config)
         cfg = cfg or {}
         local flag = cfg.Flag or nextFlag("keybind")
         local KB = {Key = cfg.Default, Flag = flag}
-        if cfg.Default then Library.Flags[flag] = cfg.Default end
+        if cfg.Default then Library._flagStore[flag] = cfg.Default end
 
         -- Keybind list integration — standalone keybinds show in the list
         -- whenever a key is bound (no toggle state to gate on).
@@ -5020,11 +5048,11 @@ buildSection = function(Tab, config)
                 KB.Key = input.KeyCode
                 pill.Text = input.KeyCode.Name
                 listening = false
-                Library.Flags[flag] = input.KeyCode
-                if cfg.Callback then pcall(cfg.Callback, input.KeyCode) end
+                Library._flagStore[flag] = input.KeyCode
+                if cfg.Callback then safecall(cfg.Callback, input.KeyCode) end
                 syncList()
             elseif not listening and KB.Key and input.KeyCode == KB.Key then
-                if cfg.Pressed then pcall(cfg.Pressed) end
+                if cfg.Pressed then safecall(cfg.Pressed) end
             end
         end)
 
@@ -5038,8 +5066,8 @@ buildSection = function(Tab, config)
         -- and fire Callback — so a config load fully restores the bind.
         Library.SetFlags[flag] = function(v)
             KB:Set(v)
-            Library.Flags[flag] = v
-            if cfg.Callback then pcall(cfg.Callback, v) end
+            Library._flagStore[flag] = v
+            if cfg.Callback then safecall(cfg.Callback, v) end
         end
         KB.Frame = row
         KB._searchKey = (cfg.Name or "keybind"):lower()
