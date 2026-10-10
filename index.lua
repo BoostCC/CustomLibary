@@ -1164,15 +1164,23 @@ local function createKeybindList(window)
         DisplayOrder = 4000,
     })
 
-    -- Text measurement — TextService:GetTextSize resolves the same font
-    -- metrics AutomaticSize would, but synchronously. The old approach
-    -- (hidden measure label + Heartbeat:Wait) stalled every Add/refresh
-    -- behind a full frame per measurement.
+    -- Text measurement — GetTextBoundsAsync resolves the same font
+    -- metrics AutomaticSize would, synchronously (the name lies: it does
+    -- not yield). GetTextSize can't be used here — it only accepts
+    -- Enum.Font, and FONT_MED is a Font instance (Inter). The params
+    -- object is reused so each measure allocates nothing.
+    local measureParams = Instance.new("GetTextBoundsParams")
+    measureParams.Font = FONT_MED
+    measureParams.Width = 1e6
     local function textWidth(s)
-        return TextService:GetTextSize(s, 14, FONT_MED, Vector2.new(1e6, 20)).X
+        measureParams.Text = s
+        measureParams.Size = 14
+        return TextService:GetTextBoundsAsync(measureParams).X
     end
     local function badgeWidth(s)
-        return TextService:GetTextSize(s, 13, FONT_MED, Vector2.new(1e6, 20)).X + 10  -- 5px L+R padding
+        measureParams.Text = s
+        measureParams.Size = 13
+        return TextService:GetTextBoundsAsync(measureParams).X + 10  -- 5px L+R padding
     end
 
     -- Container
